@@ -1,0 +1,606 @@
+---
+title: Propriedades psicométricas e utilidade clínica das Escalas de Qualidade na Interação
+  Familiar (\textsc{eqif})
+author: "Bruno Braga Montezano"
+date: "Criado em 09/06/2021 - Atualizado pela última vez em `r format(Sys.time(), '%d/%m/%Y')`"
+lang: pt-br
+output:
+  beamer_presentation:
+    theme: "Pittsburgh"
+    colortheme: "monarca"
+    fonttheme: "structurebold"
+header-includes:
+  - \usepackage{helvet}
+  - \renewcommand{\familydefault}{\sfdefault}
+  - \newcommand{\mysc}[1]{\textrm{\textsc{#1}}}
+  - \definecolor{azulzinho}{RGB}{215, 227, 252}
+  - \setbeamercolor{background canvas}{bg=azulzinho}
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+ 
+```{r packages}
+library(tidyverse) # Framework
+
+library(psych) # Psicometria (Teoria clássica)
+library(lavaan) # Modelagem por equações estruturais (MEE)
+library(semPlot) # Plots dos modelos de AFC
+
+options(scipen=999, digits=3) # Arrendondar valores e notação
+```
+
+## Notas
+
+(1) Este relatório se refere as análises dos dados de um
+instrumento aplicado em um estudo de coorte com crianças que
+aconteceu de 2015 a 2016.
+
+(2) A primeira parte do relatório está focada nos procedimentos
+de processamento dos dados, onde se carregam os dados e ajustam
+alguns possíveis problemas.
+
+## Carregamento da base de dados
+
+Os dados serão carregados com o uso do pacote `haven` com a
+função `read_spss()`, pois os rótulos das variáveis conseguem
+ser mantidos, além de informações referentes aos valores
+ausentes, etc.
+
+```{r}
+ds <- haven::read_spss("banco-infancia-kj-0318.sav")
+```
+
+## Manejo de dados
+
+- Criação de objeto de *backup*
+- Remoção de 13 observações com vários missings em variáveis sociodemográficas
+
+```{r}
+backup <- ds
+ds <- janitor::clean_names(ds)
+```
+
+```{r}
+# Existem 13 observações no topo da base que possuem
+# vários missings nas variáveis sociodemográficas
+
+# Parece ser razoável retirar essas 13 observações
+ds <- ds[-1:-13, ]
+```
+
+- Codificar variáveis sociodemográficas corretamente
+
+```{r}
+# Sexo
+ds <- ds %>% 
+  mutate(sex = factor(case_when(
+                sexo == 1 ~ "Female",
+                sexo == 2 ~ "Male",
+                TRUE ~ NA_character_
+  )))
+
+# Cor da pele
+ds <- ds %>% 
+  mutate(skincolor = factor(case_when(
+                cor_pele_cri == 1 ~ "White",
+                cor_pele_cri == 2 ~ "Non-white",
+                TRUE ~ NA_character_
+  )))
+
+# Renomear idade
+ds <- ds %>% 
+  rename(age = cidade)
+
+# Renomear variável do questionário do pai
+ds <- ds %>% 
+  rename(ceqifp32 = ceqif32)
+
+# Adicionar variáveis do respondente
+ds <- ds %>% 
+ mutate(mae_respondeu = factor(ifelse(!is.na(ceqifm7), "Yes", "No")))
+
+ds <- ds %>% 
+ mutate(pai_respondeu = factor(ifelse(!is.na(ceqifp7), "Yes", "No")))
+
+ds <- ds %>% 
+ mutate(outros_respondeu = factor(ifelse(!is.na(ceqifo7), "Yes", "No")))
+```
+
+- Criação de subconjuntos com \textsc{eqif} de cada responsável
+
+```{r}
+# Subconjunto dos questionários de mãe
+maes <- ds %>% select(starts_with("ceqifm"))
+
+# Subconjunto dos questionários de pai
+pais <- ds %>% select(starts_with("ceqifp"))
+
+# Subconjunto dos questionários de outros familiares
+outros <- ds %>% select(starts_with("ceqifo"))
+```
+
+-  Criação de subconjunto com questionários de todos os responsáveis 
+
+```{r}
+# Criando subconjunto para elaborar todas respostas agregadas
+geral <- maes
+
+# Padronizar nomes das variáveis
+names(geral) <- paste0("y", 1:40)
+names(maes) <- paste0("y", 1:40)
+names(pais) <- paste0("y", 1:40)
+names(outros) <- paste0("y", 1:40)
+
+# Rodar o coalesce para encontrar missings e completar com valor do outro questionário
+eqif_todos <- coalesce(maes, pais, outros)
+```
+
+- Checagem de distribuições (possíveis outliers)
+
+```{r, eval = FALSE}
+# Questionário das mães
+maes %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(., aes(name, value)) + geom_boxplot()
+
+# Questionário dos pais
+pais %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(., aes(name, value)) + geom_boxplot()
+
+# Questionário de outros familiares
+outros %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(., aes(name, value)) + geom_boxplot()
+```
+
+- Checar de missings em cada um dos questionários
+
+```{r, eval = FALSE}
+# Questionários respondidos pelas mães
+maes %>% DataExplorer::plot_missing()
+
+# Questionários respondidos pelos pais
+pais %>% DataExplorer::plot_missing()
+
+# Questionários respondidos pelos outros familiares
+outros %>% DataExplorer::plot_missing()
+
+# Todos os questionários de qualquer familiar
+eqif_todos %>% DataExplorer::plot_missing()
+```
+
+# Visualizações
+
+## Frequência de cada resposta nos itens
+
+```{r}
+eqif_plot_itens <- eqif_todos %>% tidyr::gather(item, response) %>%
+    dplyr::group_by(item, response) %>%
+    dplyr::summarise(count = n()) %>%
+    dplyr::group_by(item) %>%
+    dplyr::mutate(perc = 100 * count / sum(count)) %>%
+    dplyr::ungroup()
+
+ordem_itens <- paste0("y", 1:40)
+labels_itens <- paste0("Item ", 1:40)
+
+eqif_plot_itens$item <- factor(eqif_plot_itens$item,
+                               levels = c(ordem_itens),
+                               labels = c(labels_itens))
+eqif_plot_itens %>%
+    ggplot2::ggplot(., aes(x = response, y = perc, fill = as.factor(response))) +
+    ggplot2::geom_bar(stat = "identity") +
+    ggplot2::facet_wrap(~item) +
+    labs(x = "Resposta", y = "% de cada resposta", fill = "Respostas") +
+    scale_fill_manual(values = c("#c8bfe9",
+                                 "#9180d3",
+                                 "#5a41bd",
+                                 "#3c2b7e",
+                                 "#1e153f"))
+```
+
+## Matriz de correlação policórica
+
+```{r}
+poly_cor <- psych::polychoric(eqif_todos)
+gr <- colorRampPalette(c("#e0be36", "white", "#3c2b7e"))
+psych::cor.plot(poly_cor$rho,
+                numbers = FALSE,
+                alpha = 1,
+                upper = FALSE,
+                show.legend = TRUE,
+                xlas = 2,
+                gr = gr)
+```
+
+# Viabilidade de análise fatorial exploratória
+
+## Teste \textsc{kmo}
+
+- Para testar a consistência geral dos dados, identificando se um modelo de análise fatorial
+pode ajustar-se aos dados, utilizamos o teste de Kaiser-Meyer-Olkin
+
+```{r}
+poly_cor$rho %>% psych::KMO() -> kmo_out
+#kmo_out$MSA
+```
+
+- O valor total do \textsc{kmo} para a \textsc{eqif} na amostra do presente estudo
+  foi de `r kmo_out$MSA`
+  
+- Idealmente, esperamos um valor de \textsc{kmo} maior do que 0,6 para compreendermos que
+uma análise fatorial é apropriada, logo, podemos seguir com os procedimentos
+
+## Teste de Bartlett
+
+- O teste de esfericidade de Bartlett mede se a análise fatorial (\textsc{af})
+é adequada ao problema
+
+- Ou seja, vamos verificar se existe correlação suficientemente forte para que uma \textsc{af}
+seja aplicada.
+Esperamos rejeitar a hipótese nula de que a matriz de correlação não possui correlação
+suficiente entre as variáveis:
+
+```{r}
+n_p <- nrow(eqif_todos)
+bt_out <- cortest.bartlett(poly_cor$rho, n = n_p)
+#bt_out %>% str()
+bt_table <- data.frame(Teste = 15581, gl = 780, p = "<0.001")
+pander::pander(bt_table,
+               caption = "Teste de Bartlett da homogeneidade das variâncias.")
+```
+
+# Quantos fatores reter?
+
+## Análise paralela
+
+\tiny
+```{r}
+set.seed(666)
+library(nFactors)
+ReducedEig <- eigenComputes(poly_cor$rho, cor = FALSE, model = "factors")
+n_nu <- ncol(poly_cor$rho)
+n_factors <- length(ReducedEig)
+paral <- parallel(subject = n_p,
+                      var = n_nu,
+                      rep = 100,
+                 quantile = .95, 
+                    model = "factors")
+
+ParallelAna <- data.frame(Nfactor= 1:n_factors,
+                        ReducedEig,
+                        RandEigM = paral$eigen$mevpea,
+                       RandEig95 = paral$eigen$qevpea)
+ParallelAna <- round(ParallelAna, 3)
+anal_par <- ParallelAna %>% as.data.frame()
+colnames(anal_par) <- c("Fatores", "Eigen reduzido", "Média dos eigeinvalues",
+                        "Quantis dos eigenvalues")
+anal_par_1 <- anal_par[1:20,]
+anal_par_2 <- anal_par[21:40,]
+anal_par_1 %>% pander::pander(., caption = "Tabela com autovalores para cada estrutura
+                            fatorial - parte 1", table.emphasize.rownames = FALSE)
+```
+
+## Análise paralela
+
+\tiny
+```{r}
+row.names(anal_par_2) <- NULL
+anal_par_2 %>% pander::pander(., caption = "Tabela com autovalores para cada estrutura
+                            fatorial - parte 2")
+```
+
+## Gráfico de escarpa (*scree plot*)
+
+```{r, out.width = "85%", fig.align = "center"}
+scree <- data.frame(Factor_n = as.factor(1:n_factors), 
+                  Eigenvalue = ReducedEig)
+ggplot(scree, aes(x = Factor_n, y = Eigenvalue, group = 1)) + 
+  geom_point() + geom_line() +
+  xlab("Número de fatores") +
+  ylab("Autovalor (eigenvalue)") +
+  labs(title = element_blank()) +
+  geom_hline(yintercept=1, linetype = "dashed", color = "#5a41bd")
+```
+
+\small
+De acordo com a análise paralela, podemos perceber que nos é sugerido um modelo
+de quatro fatores. Porém, como hipótese, não descarta-se a estrutura original do
+instrumento, com nove fatores.
+
+# Elaboração do modelo de análise fatorial exploratória (\textsc{efa})
+
+## Modelo de \textsc{efa}
+
+- Foi criado somente um modelo para análise fatorial exploratória:
+  - Modelo de quatro fatores
+  
+- Utilizou-se uma matriz de correlação policórica (apropriada para itens de
+caráter ordinal)
+
+- Recorreu-se ao método de rotação oblíqua *promax*, permitindo a
+correlação entre os diferentes fatores latentes
+
+- Optou-se pela solução de fator principal (ou eixo principal) como método de fatoração,
+por ser bastante consistente e confiável com embasamento na literatura
+
+```{r}
+# BORA LEMBRAR DA PARCIMÔNIA
+efa_4 <- psych::fa(eqif_todos,
+                   nfactors = 4,
+                   cor = "poly",
+                   fm = "pa",
+                   rotate = "promax")
+```
+
+## Modelo de 4 fatores
+
+\tiny
+```{r}
+cargas_4 <- unclass(loadings(efa_4)) %>% as.data.frame()
+
+cargas_4$PA1 <- round(cargas_4$PA1, 3)
+cargas_4$PA1 <- ifelse(abs(cargas_4$PA1) < 0.3, " ", cargas_4$PA1)
+
+cargas_4$PA2 <- round(cargas_4$PA2, 3)
+cargas_4$PA2 <- ifelse(abs(cargas_4$PA2) < 0.3, " ", cargas_4$PA2)
+
+cargas_4$PA3 <- round(cargas_4$PA3, 3)
+cargas_4$PA3 <- ifelse(abs(cargas_4$PA3) < 0.3, " ", cargas_4$PA3)
+
+cargas_4$PA4 <- round(cargas_4$PA4, 3)
+cargas_4$PA4 <- ifelse(abs(cargas_4$PA4) < 0.3, " ", cargas_4$PA4)
+
+cargas_4 <- rownames_to_column(cargas_4, "Item")
+
+colnames(cargas_4)[2:5] <- c("Fator 1", "Fator 2", "Fator 3", "Fator 4")
+cargas_4$Item <- 1:40
+
+cargas_4_1 <- cargas_4[1:20,]
+cargas_4_2 <- cargas_4[21:40,]
+
+cargas_4_1 %>% pander::pander(., caption = "Cargas fatoriais do modelo de quatro fatores - 
+                              parte 1")
+```
+
+## Modelo de 4 fatores
+
+\tiny
+```{r}
+rownames(cargas_4_2) <- NULL
+cargas_4_2 %>% pander::pander(., caption = "Cargas fatoriais do modelo de quatro fatores - 
+                              parte 2")
+```
+
+# Análise fatorial confirmatória (\textsc{afc})
+
+```{r}
+est_orig <- 'Envolvimento =~ y1 + y9 + y17 + y19 + y26 + y27 + y30 + y35
+             Regras =~ y18 + y28 + y36 + y39
+             ComunicacaoPos =~ y4 + y12 + y22
+             ComunicacaoNeg =~ y2 + y5 + y10 + y13 + y32
+             PunicaoCorp =~ y20 + y31 + y37
+             ConjugalPos =~ y6 + y14 + y23 + y33 + y38
+             ConjugalNeg =~ y3 + y11 + y21 + y29
+             ModParental =~ y7 + y15 + y24
+             SentimentoFilhos =~ y8 + y16 + y25 + y34 + y40'
+
+set.seed(666)
+mod_orig <- cfa(est_orig,
+             data = eqif_todos,
+             estimator = "WLSMV",
+             orthogonal = FALSE,
+             ordered=names(eqif_todos))
+```
+
+## Índices de ajuste da \textsc{afc} da estrutura original
+
+\small
+  
+```{r}
+indices_orig <- fitMeasures(mod_orig,
+                            fit.measures = c("chisq.scaled", "df.scaled", "rmsea.scaled", "cfi.scaled",
+                                             "tli.scaled", "gfi", "srmr",
+                                             "agfi")) %>% as.data.frame() %>% t()
+
+colnames(indices_orig) <- c("Qui-quadrado", "gl", "RMSEA", "CFI", "TLI", "GFI", "SRMR", "AGFI")
+rownames(indices_orig) <- NULL
+indices_orig %>% pander::pander(caption = "Índices de ajuste do modelo original da
+                                \textsc{eqif} de 9 fatores.",
+                                digits = 3)
+
+```
+
+Como pode-se observar, todos os índices se mostram adequados:
+
+  - \textsc{cfi} $\geq$ 0.90
+  - \textsc{tli} $\geq$ 0.95
+  - \textsc{gfi} $\geq$ 0.95
+  - \textsc{rmsea} $<$ 0.08
+  - \textsc{srmr} $<$ 0.08
+  - \textsc{agfi} $\geq$ 0.90
+  
+## Parâmetros do modelo da \textsc{afc} da estrutura original
+
+\tiny
+  
+```{r}
+param_orig <- parameterEstimates(mod_orig, standardized = TRUE) %>%
+            filter(op == "=~") %>% 
+            arrange(desc(std.all), lhs) %>%
+            select('Dimensão' = lhs, Item = rhs, Carga = est, 'Erro Padrão' = se, Z = z,
+            'Carga padronizada' = std.all)
+
+param_orig_p1 <- param_orig[1:20,]
+param_orig_p2 <- param_orig[21:40,]
+  
+param_orig_p1 %>% 
+            pander::pander(caption = "Cargas fatoriais dos itens na \\textsc{afc} de 9 fatores - parte 1", digits = 3)
+```
+  
+## Parâmetros do modelo da \textsc{afc} da estrutura original
+
+\tiny
+
+```{r}
+rownames(param_orig_p2) <- NULL
+
+param_orig_p2 %>% 
+            pander::pander(caption = "Cargas fatoriais dos itens na \\textsc{afc} de
+                           9 fatores - parte 2", digits = 3)
+```
+
+# Medidas de consistência interna
+
+## Alfa de Cronbach e Ômega de McDonald
+
+```{r}
+# alfa de cronbach com correlação policorica
+alfa <- psych::alpha(poly_cor$rho, check.keys = TRUE)
+
+#omega de mcdonald
+omega_mc <- MBESS::ci.reliability(eqif_todos, type="omega")
+```
+
+\small
+
+- O alfa foi desenvolvido por Lee Cronbach em 1951 para fornecer uma medida da consistência
+interna de um teste ou escala; é expressa como um número entre 0 e 1.
+A consistência interna descreve até que ponto todos os itens em um teste medem o mesmo
+conceito ou construto
+
+- McDonald propôs o coeficiente ômega como uma estimativa da saturação geral
+do fator de um teste
+
+- O valor do coeficiente alfa de Cronbach (alfa ordinal)
+para o instrumento como um todo foi de `r alfa$total$std.alpha`, e o ômega de McDonald teve
+um valor de `r omega_mc$est`
+
+## Alfa ordinal para cada subescala
+
+\small
+
+```{r}
+#Envolvimento =~ y1 + y9 + y17 + y19 + y26 + y27 + y30 + y35
+envolvimento <- eqif_todos %>% select(y1, y9, y17, y19, y26, y27, y30, y35)
+alfa_env <- psych::alpha(psych::polychoric(envolvimento)$rho, check.keys = TRUE)
+#Regras =~ y18 + y28 + y36 + y39
+regras <- eqif_todos %>% select(y18, y28, y36, y39)
+alfa_reg <- psych::alpha(psych::polychoric(regras)$rho, check.keys = TRUE)
+#ComunicacaoPos =~ y4 + y12 + y22
+comunicacaopos <- eqif_todos %>% select(y4, y12, y22)
+alfa_compos <- psych::alpha(psych::polychoric(comunicacaopos)$rho, check.keys = TRUE)
+#ComunicacaoNeg =~ y2 + y5 + y10 + y13 + y32
+comunicacaoneg <- eqif_todos %>% select(y2, y5, y10, y13, y32)
+alfa_comneg <- psych::alpha(psych::polychoric(comunicacaoneg)$rho, check.keys = TRUE)
+#PunicaoCorp =~ y20 + y31 + y37
+punicaocorp <- eqif_todos %>% select(y20, y31, y37)
+alfa_punicorp <- psych::alpha(psych::polychoric(punicaocorp)$rho, check.keys = TRUE)
+#ConjugalPos =~ y6 + y14 + y23 + y33 + y38
+conjugalpos <- eqif_todos %>% select(y6, y14, y23, y33, y38)
+alfa_conjpos <- psych::alpha(psych::polychoric(conjugalpos)$rho, check.keys = TRUE)
+#ConjugalNeg =~ y3 + y11 + y21 + y29
+conjugalneg <- eqif_todos %>% select(y3, y11, y21, y29)
+alfa_conjneg <- psych::alpha(psych::polychoric(conjugalneg)$rho, check.keys = TRUE)
+#ModParental =~ y7 + y15 + y24
+modparental <- eqif_todos %>% select(y7, y15, y24)
+alfa_modpar <- psych::alpha(psych::polychoric(modparental)$rho, check.keys = TRUE)
+#SentimentoFilhos =~ y8 + y16 + y25 + y34 + y40'
+sentimentofilhos <- eqif_todos %>% select(y8, y16, y25, y34, y40)
+alfa_sentfilhos <- psych::alpha(psych::polychoric(sentimentofilhos)$rho, check.keys = TRUE)
+```
+
+Segue abaixo o valor do coeficiente alfa ordinal para cada subteste da \textsc{eqif}:
+
+- Envolvimento: `r alfa_env$total$std.alpha`
+- Regras e monitoria: `r alfa_reg$total$std.alpha`
+- Comunicação positiva dos filhos: `r alfa_compos$total$std.alpha`
+- Comunicação negativa: `r alfa_comneg$total$std.alpha`
+- Punição corporal: `r alfa_punicorp$total$std.alpha`
+- Clima conjugal positivo: `r alfa_conjpos$total$std.alpha`
+- Clima conjugal negativo: `r alfa_conjneg$total$std.alpha`
+- Modelo parental: `r alfa_modpar$total$std.alpha`
+- Sentimento dos filhos: `r alfa_sentfilhos$total$std.alpha`
+
+# Evidências de validade externa (\textsc{em construção})
+
+## Validade convergente
+
+```{r}
+ds_iep <- ds %>% select(starts_with("iep"))
+#lapply(ds_iep, table)
+
+fun_zero <- function(vector_with_nas) {
+  vector_with_nas[is.na(vector_with_nas)] <- 0
+  return(vector_with_nas)
+}
+
+ds_iep <- as.data.frame(lapply(ds_iep, fun_zero))
+
+
+### CÁLCULO DOS DOMÍNIOS DA IEP ###
+
+# Monitoria positiva
+ds_iep <- ds_iep %>% rowwise() %>% mutate(mon_pos = sum(c(iep1, iep8, iep15, iep22,
+                                                iep29, iep36)))
+
+# Comportamento Moral
+ds_iep <- ds_iep %>% rowwise() %>% mutate(comp_moral = sum(c(iep2, iep9, iep16, iep23,
+                                                iep30, iep37)))
+
+# Punição Inconsistente
+ds_iep <- ds_iep %>% rowwise() %>% mutate(pun_inco = sum(c(iep3, iep10, iep17, iep24,
+                                                iep31, iep38)))
+
+# Negligência
+ds_iep <- ds_iep %>% rowwise() %>% mutate(neglig = sum(c(iep4, iep11, iep18, iep25,
+                                                iep32, iep39)))
+
+# Disciplina relaxada
+ds_iep <- ds_iep %>% rowwise() %>% mutate(disc_relax = sum(c(iep5, iep12, iep19, iep26,
+                                                iep33, iep40)))
+
+## Não tem itens 41 e 42 coletados
+
+# Monitoria negativa
+ds_iep <- ds_iep %>% rowwise() %>% mutate(mon_neg = sum(c(iep6, iep13, iep20, iep27,
+                                                iep34)))
+
+# Abuso físico
+ds_iep <- ds_iep %>% rowwise() %>% mutate(abus_fis = sum(c(iep7, iep14, iep21, iep28,
+                                                iep35)))
+```
+
+```{r}
+## CÁLCULO DOS DOMÍNIOS DA EQIF
+ds_eqif <- eqif_todos
+
+# Envolvimento
+ds_eqif <- ds_eqif %>% rowwise() %>% mutate(envolv = sum(c(y1, y9, y17, y19, y26, y27, y30, y35)))
+
+# Regras e monitoria
+ds_eqif <- ds_eqif %>% rowwise() %>% mutate(regras = sum(c(y18, y28, y36, y39)))
+```
+
+
+```{r}
+ds_iep <- ds_iep %>% rowwise() %>% mutate(indice_iep = (mon_pos + comp_moral) -
+                                                       (pun_inco + neglig +
+                                                        disc_relax + mon_neg + abus_fis))
+
+cor.test(ds_eqif$envolv, ds_iep$indice_iep)
+```
+
+
+
+
+
+
+  
+  
